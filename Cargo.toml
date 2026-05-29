@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ndarray = "0.17.2"
 softbuffer = "0.4.8"
+tobj = "4.0.3"
 winit = "0.30.13"
