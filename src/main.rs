@@ -16,6 +16,7 @@ struct RasterizerApp {
     context: Option<softbuffer::Context<Rc<Window>>>,
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
     mesh: Mesh,
+    depth: Vec<f32>,
 }
 
   fn project(v: [f32;4], width: f32, height: f32) -> [f32; 3] {
@@ -63,7 +64,7 @@ impl ApplicationHandler for RasterizerApp {
                     NonZeroU32::new(size.width).unwrap(),
                     NonZeroU32::new(size.height).unwrap(),
                 ).unwrap();
-
+                
                 let mut buffer = surface.buffer_mut().unwrap();
 
                 for pixel in buffer.iter_mut() {
@@ -72,6 +73,10 @@ impl ApplicationHandler for RasterizerApp {
 
                 let width = size.width as f32;
                 let height = size.height as f32;
+                
+                let pixel_count = size.width as usize * size.height as usize;
+                self.depth.resize(pixel_count, f32::INFINITY);
+                self.depth.fill(f32::INFINITY);
 
                 for triangle in self.mesh.triangles.iter(){
 
@@ -83,7 +88,7 @@ impl ApplicationHandler for RasterizerApp {
                     let p2 = project(triangle.v2, width, height);
 
                     raster::draw_triangle(
-                       &mut buffer, size.width as usize, size.height as usize,
+                       &mut buffer, &mut self.depth, size.width as usize, size.height as usize,
                         p0, p1, p2);
                     
                 }
@@ -124,6 +129,7 @@ fn main() {
         context: None,
         surface: None,
         mesh: mesh,
+        depth: Vec::new(),
     };
 
     event_loop.run_app(&mut app).unwrap();

@@ -4,7 +4,7 @@ pub fn edge(a:[f32;3] ,b:[f32;3], p:[f32;3]) -> f32{
 
 }
 
-pub fn draw_triangle(depth_buf: &mut [u32],
+pub fn draw_triangle(color_buf: &mut [u32], depth: &mut Vec<f32>,
       width: usize,
       height: usize,
       v0: [f32; 3],  
@@ -24,20 +24,28 @@ pub fn draw_triangle(depth_buf: &mut [u32],
         for x in min_x..max_x{
             let p = [x as f32 + 0.5, y as f32 + 0.5, 0.0];
 
-            let e0 = edge(v0, v1, p);
-            let e1 = edge(v0, v2, p);
-            let e2 = edge(v1, v2, p);
+            let e_v2 = edge(v0, v1, p);
+            let e_v0 = edge(v1, v2, p);
+            let e_v1 = edge(v2, v0, p);
+
 
             // inside if all three edges share area2's sign
             let inside = if area_into_two > 0.0 {
-                e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0
+                e_v2 >= 0.0 && e_v1 >= 0.0 && e_v0 >= 0.0
             } else {
-                e0 <= 0.0 && e1 <= 0.0 && e2 <= 0.0
+                e_v2 <= 0.0 && e_v1 <= 0.0 && e_v0 <= 0.0
             };
 
             if inside {
                 let idx = y as usize * width + x as usize;
-                depth_buf[idx] = 0xFF_B6_C1;
+                let w0 = e_v0 / area_into_two;
+                let w1 = e_v1 / area_into_two;
+                let w2 = e_v2 / area_into_two;
+                let z = w0 * v0[2] + w1 * v1[2] + w2 * v2[2];
+                if z < depth[idx]{
+                    depth[idx] = z;
+                    color_buf[idx] = 0xFF_B6_C1;
+                }
             }
         }
     }
