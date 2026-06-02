@@ -1,12 +1,11 @@
-use ndarray::{array,Array1};
 use std::path::Path;
 use tobj;
 use std::fmt::Debug;
 
 pub struct Triangle {
-    pub v0: Array1<f32>,
-    pub v1: Array1<f32>,
-    pub v2: Array1<f32>,
+    pub v0: [f32;4],
+    pub v1: [f32;4],
+    pub v2: [f32;4],
 }
 
 pub struct Mesh{
@@ -34,24 +33,24 @@ pub fn load_mesh_as_ndarray<P: AsRef<Path> + Debug>(path: P) -> Mesh{
             let idx1 = chunk[1] as usize;
             let idx2 = chunk[2] as usize;
 
-            let v0 = array![
+            let v0 = [
                 mesh.positions[idx0 * 3],
                 mesh.positions[idx0 * 3 + 1],
-                mesh.positions[idx0 * 3 + 2] + 5.0,
-                1.0 // The Homogeneous W coordinate
+                mesh.positions[idx0 * 3 + 2] + 8.0,
+                1.0 
             ];
 
-            let v1 = array![
+            let v1 =[
                 mesh.positions[idx1 * 3],
                 mesh.positions[idx1 * 3 + 1],
-                mesh.positions[idx1 * 3 + 2] + 5.0,
+                mesh.positions[idx1 * 3 + 2] + 8.0,
                 1.0
             ];
 
-            let v2 = array![
+            let v2 =[
                 mesh.positions[idx2 * 3],
                 mesh.positions[idx2 * 3 + 1],
-                mesh.positions[idx2 * 3 + 2] + 5.0,
+                mesh.positions[idx2 * 3 + 2] + 8.0,
                 1.0
             ];
 

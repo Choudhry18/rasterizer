@@ -1,3 +1,6 @@
+mod io;
+mod raster;
+
 use std::num::NonZeroU32;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -5,9 +8,8 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 use std::rc::Rc;
 use io::Mesh;
-
 use crate::io::load_mesh_as_ndarray;
-mod io;
+
 
 struct RasterizerApp {
     window: Option<Rc<Window>>,
@@ -16,6 +18,16 @@ struct RasterizerApp {
     mesh: Mesh,
 }
 
+  fn project(v: [f32;4], width: f32, height: f32) -> [f32; 3] {
+      let inv_z = 1.0 / v[2];
+      let ndc_x = v[0] * inv_z;
+      let ndc_y = v[1] * inv_z;
+
+      let px = (ndc_x + 1.0) * 0.5 * width;
+      let py = (1.0 - ndc_y) * 0.5 * height;
+
+      [px, py, v[2]]
+  }
 impl ApplicationHandler for RasterizerApp {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let window_attributes = Window::default_attributes()
@@ -63,37 +75,16 @@ impl ApplicationHandler for RasterizerApp {
 
                 for triangle in self.mesh.triangles.iter(){
 
-                    let v0 = &triangle.v0;
-                    let v1 = &triangle.v1;
-                    let v2 = &triangle.v2;
 
-                    if v0[2] <= 0.0 || v1[2] <= 0.0 || v2[2] <= 0.0 {continue; }
+                    if triangle.v0[2] <= 0.0 || triangle.v1[2] <= 0.0 || triangle.v2[2] <= 0.0 {continue; }
 
-                    let p0_proj_x = v0[0] / v0[2];
-                    let p0_proj_y = v0[1] / v0[2];
+                    let p0 = project(triangle.v0, width, height);
+                    let p1 = project(triangle.v1, width, height);
+                    let p2 = project(triangle.v2, width, height);
 
-                    let p1_proj_x = v1[0] / v1[2];
-                    let p1_proj_y = v1[1] / v1[2];
-
-                    let p2_proj_x = v2[0] / v2[2];
-                    let p2_proj_y = v2[1] / v2[2];
-
-                    let pixel0_x = ((p0_proj_x + 1.0) / 2.0) * width;
-                    let pixel0_y = ((1.0 - p0_proj_y) / 2.0) * height;
-
-                    let pixel1_x = ((p1_proj_x + 1.0) / 2.0) * width;
-                    let pixel1_y = ((1.0 - p1_proj_y) / 2.0) * height;
-
-                    let pixel2_x = ((p2_proj_x + 1.0) / 2.0) * width;
-                    let pixel2_y = ((1.0 - p2_proj_y) / 2.0) * height;
-
-                    let idx0 = (pixel0_y as usize * width as usize) + pixel0_x as usize;
-                    let idx1 = (pixel1_y as usize * width as usize) + pixel1_x as usize;
-                    let idx2 = (pixel2_y as usize * width as usize) + pixel2_x as usize;
-
-                    if idx0 < buffer.len() { buffer[idx0] = 0xFF_FF_FF_FF; } // Draw a white dot
-                    if idx1 < buffer.len() { buffer[idx1] = 0xFF_FF_FF_FF; }
-                    if idx2 < buffer.len() { buffer[idx2] = 0xFF_FF_FF_FF; }
+                    raster::draw_triangle(
+                       &mut buffer, size.width as usize, size.height as usize,
+                        p0, p1, p2);
                     
                 }
 
