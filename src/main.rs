@@ -2,11 +2,13 @@ mod io;
 mod raster;
 mod camera;
 
+
 use std::num::NonZeroU32;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
+use winit::event::ElementState;
 use std::rc::Rc;
 use io::Mesh;
 use crate::io::load_mesh_as_ndarray;
@@ -19,6 +21,8 @@ struct RasterizerApp {
     mesh: Mesh,
     depth: Vec<f32>,
     camera_state: camera::CameraState,
+    mouse_down: bool,
+    last_cursor: Option<(f64, f64)>,  
 }
 
   fn project(v: [f32;4], width: f32, height: f32) -> [f32; 3] {
@@ -65,6 +69,25 @@ impl ApplicationHandler for RasterizerApp {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
+
+            WindowEvent::MouseInput {state, button, ..}=> {
+                self.mouse_down = state == ElementState::Pressed;
+                if !self.mouse_down { self.last_cursor = None; }
+            }
+
+            WindowEvent::CursorMoved {position, .. } => {
+
+                let pos = (position.x, position.y);
+                if self.mouse_down {
+                    if let Some((lx, ly)) = self.last_cursor {
+                        let dx = (pos.0 - lx) as f32;
+                        let dy = (pos.1 - ly) as f32;
+                        // self.camera_state.orbit(dx, dy);  
+                    }
+                }
+                self.last_cursor = Some(pos);
+            }
+
             WindowEvent::RedrawRequested => {
                 let (Some(surface), Some(window)) = (&mut self.surface, &self.window) else { return; };
                 let size = window.inner_size();
@@ -151,6 +174,8 @@ fn main() {
             [0.0, 0.0,  0.0],
             [0.0, 1.0,  0.0],
         ),
+        mouse_down: false,
+        last_cursor: None,
     };
 
     event_loop.run_app(&mut app).unwrap();
