@@ -1,5 +1,6 @@
 mod io;
 mod raster;
+mod camera;
 
 use std::num::NonZeroU32;
 use winit::application::ApplicationHandler;
@@ -17,6 +18,7 @@ struct RasterizerApp {
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
     mesh: Mesh,
     depth: Vec<f32>,
+    camera_state: camera::CameraState,
 }
 
   fn project(v: [f32;4], width: f32, height: f32) -> [f32; 3] {
@@ -29,6 +31,15 @@ struct RasterizerApp {
 
       [px, py, v[2]]
   }
+
+  fn mat_mul(a: &[[f32;4];4],b: [f32;4]) -> [f32;4]{
+    let row1 = a[0][0] * b[0] + a[0][1] * b[1] + a[0][2] * b[2] + a[0][3] * b[3];
+    let row2 = a[1][0] * b[0] + a[1][1] * b[1] + a[1][2] * b[2] + a[1][3] * b[3];
+    let row3 = a[2][0] * b[0] + a[2][1] * b[1] + a[2][2] * b[2] + a[2][3] * b[3];
+    let row4 = a[3][0] * b[0] + a[3][1] * b[1] + a[3][2] * b[2] + a[3][3] * b[3];
+
+    [row1, row2, row3, row4]
+}
 impl ApplicationHandler for RasterizerApp {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let window_attributes = Window::default_attributes()
@@ -78,14 +89,19 @@ impl ApplicationHandler for RasterizerApp {
                 self.depth.resize(pixel_count, f32::INFINITY);
                 self.depth.fill(f32::INFINITY);
 
+                let view = self.camera_state.build_view();
+
                 for triangle in self.mesh.triangles.iter(){
 
+                    let v0 = mat_mul(&view, triangle.v0);
+                    let v1 = mat_mul(&view, triangle.v1);
+                    let v2 = mat_mul(&view, triangle.v2);
 
-                    if triangle.v0[2] <= 0.0 || triangle.v1[2] <= 0.0 || triangle.v2[2] <= 0.0 {continue; }
+                    if v0[2] <= 0.0 || v1[2] <= 0.0 || v2[2] <= 0.0 {continue; }
 
-                    let p0 = project(triangle.v0, width, height);
-                    let p1 = project(triangle.v1, width, height);
-                    let p2 = project(triangle.v2, width, height);
+                    let p0 = project(v0, width, height);
+                    let p1 = project(v1, width, height);
+                    let p2 = project(v2, width, height);
 
                     raster::draw_triangle(
                        &mut buffer, &mut self.depth, size.width as usize, size.height as usize,
@@ -130,6 +146,11 @@ fn main() {
         surface: None,
         mesh: mesh,
         depth: Vec::new(),
+        camera_state: camera::CameraState::new(
+            [0.0, 0.0, -8.0],
+            [0.0, 0.0,  0.0],
+            [0.0, 1.0,  0.0],
+        ),
     };
 
     event_loop.run_app(&mut app).unwrap();

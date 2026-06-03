@@ -36,21 +36,21 @@ pub fn load_mesh_as_ndarray<P: AsRef<Path> + Debug>(path: P) -> Mesh{
             let v0 = [
                 mesh.positions[idx0 * 3],
                 mesh.positions[idx0 * 3 + 1],
-                mesh.positions[idx0 * 3 + 2] + 8.0,
+                mesh.positions[idx0 * 3 + 2],
                 1.0 
             ];
 
             let v1 =[
                 mesh.positions[idx1 * 3],
                 mesh.positions[idx1 * 3 + 1],
-                mesh.positions[idx1 * 3 + 2] + 8.0,
+                mesh.positions[idx1 * 3 + 2],
                 1.0
             ];
 
             let v2 =[
                 mesh.positions[idx2 * 3],
                 mesh.positions[idx2 * 3 + 1],
-                mesh.positions[idx2 * 3 + 2] + 8.0,
+                mesh.positions[idx2 * 3 + 2],
                 1.0
             ];
 
