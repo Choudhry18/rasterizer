@@ -14,15 +14,33 @@ impl CameraState {
         let right = normalize(cross_product(self.cam_up, forward));
         let newup = cross_product(forward, right);
         let tx = -1.0 * dot_product(right, self.cam_from);
-        let ty = -1.0 * dot_product(newup, self.cam_from);
+        let ty = -1.0 * dot_product(newup, self.cam_from);i 
         let tz = -1.0 * dot_product(forward, self.cam_from);
 
         //inverse transaltion
         [[right[0], right[1], right[2], tx], [newup[0], newup[1], newup[2], ty], [forward[0], forward[1], forward[2], tz], [0.0, 0.0, 0.0, 1.0]]
     }
+    pub fn pan(&mut self, dx: f32, dy: f32) {
+    let forward = normalize(subtract(self.cam_to, self.cam_from));
+    let right = normalize(cross_product(self.cam_up, forward));
+    let up = cross_product(forward, right);
+
+    let scale = 0.01;
+
+    let offset = [
+        (-right[0] * dx + up[0] * dy) * scale,
+        (-right[1] * dx + up[1] * dy) * scale,
+        (-right[2] * dx + up[2] * dy) * scale,
+    ];
+
+    self.cam_from = add(self.cam_from, offset);
+    self.cam_to = add(self.cam_to, offset);
+    }
 }
 
-
+fn add(a: [f32; 3], b: [f32; 3]) -> [f32;3]{
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
 
 fn subtract(a: [f32; 3], b: [f32; 3]) -> [f32;3]{
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]

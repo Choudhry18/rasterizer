@@ -82,7 +82,7 @@ impl ApplicationHandler for RasterizerApp {
                     if let Some((lx, ly)) = self.last_cursor {
                         let dx = (pos.0 - lx) as f32;
                         let dy = (pos.1 - ly) as f32;
-                        // self.camera_state.orbit(dx, dy);  
+                        self.camera_state.pan(dx, dy);  
                     }
                 }
                 self.last_cursor = Some(pos);
