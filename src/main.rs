@@ -9,6 +9,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 use winit::event::ElementState;
+use winit::keyboard::ModifiersState;
+use winit::event::MouseScrollDelta;
 use std::rc::Rc;
 use io::Mesh;
 use crate::io::load_mesh_as_ndarray;
@@ -22,8 +24,12 @@ struct RasterizerApp {
     depth: Vec<f32>,
     camera_state: camera::CameraState,
     mouse_down: bool,
-    last_cursor: Option<(f64, f64)>,  
+    last_cursor: Option<(f64, f64)>,
+    modifiers: ModifiersState,
 }
+const PAN_SENS: f32 = 0.01;
+const ORBIT_SENS: f32 = 0.005;
+const DOLLY_SENS: f32 = 0.5;
 
   fn project(v: [f32;4], width: f32, height: f32) -> [f32; 3] {
       let inv_z = 1.0 / v[2];
@@ -69,10 +75,21 @@ impl ApplicationHandler for RasterizerApp {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
+             WindowEvent::ModifiersChanged(new) => {
+                self.modifiers = new.state();
+            }
 
             WindowEvent::MouseInput {state, button, ..}=> {
                 self.mouse_down = state == ElementState::Pressed;
                 if !self.mouse_down { self.last_cursor = None; }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p)   => (p.y as f32) * 0.01,
+                };
+                self.camera_state.dolly(amount * DOLLY_SENS);
             }
 
             WindowEvent::CursorMoved {position, .. } => {
@@ -82,7 +99,12 @@ impl ApplicationHandler for RasterizerApp {
                     if let Some((lx, ly)) = self.last_cursor {
                         let dx = (pos.0 - lx) as f32;
                         let dy = (pos.1 - ly) as f32;
-                        self.camera_state.pan(dx, dy);  
+
+                        if self.modifiers.control_key(){
+                            self.camera_state.orbit(-dx * ORBIT_SENS, -dy * ORBIT_SENS);
+                        }else{
+                            self.camera_state.pan(-dx * PAN_SENS, dy * PAN_SENS); 
+                        }
                     }
                 }
                 self.last_cursor = Some(pos);
@@ -170,12 +192,16 @@ fn main() {
         mesh: mesh,
         depth: Vec::new(),
         camera_state: camera::CameraState::new(
-            [0.0, 0.0, -8.0],
-            [0.0, 0.0,  0.0],
-            [0.0, 1.0,  0.0],
+            [0.0, 0.0, 0.0],         // cam_to (target)
+            [0.0, 1.0, 0.0],         // cam_up (world up)
+            std::f32::consts::PI,    // yaw — start camera on -Z (behind target)
+            0.0,                     // pitch — horizon level
+            8.0,                     // radius — 8 units from target
         ),
         mouse_down: false,
         last_cursor: None,
+        modifiers: ModifiersState::empty()
+
     };
 
     event_loop.run_app(&mut app).unwrap();
