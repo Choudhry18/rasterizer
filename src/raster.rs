@@ -9,7 +9,8 @@ pub fn draw_triangle(color_buf: &mut [u32], depth: &mut Vec<f32>,
       height: usize,
       v0: [f32; 3],  
       v1: [f32; 3],
-      v2: [f32; 3]
+      v2: [f32; 3],
+      color: u32,
     ){
 
     let min_x = v0[0].min(v1[0]).min(v2[0]).floor().max(0.0) as i32;
@@ -44,7 +45,7 @@ pub fn draw_triangle(color_buf: &mut [u32], depth: &mut Vec<f32>,
                 let z = w0 * v0[2] + w1 * v1[2] + w2 * v2[2];
                 if z < depth[idx]{
                     depth[idx] = z;
-                    color_buf[idx] = 0xFF_B6_C1;
+                    color_buf[idx] = color;
                 }
             }
         }

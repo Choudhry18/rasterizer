@@ -1,7 +1,7 @@
 mod io;
 mod raster;
 mod camera;
-
+mod calculations;
 
 use std::num::NonZeroU32;
 use winit::application::ApplicationHandler;
@@ -14,6 +14,7 @@ use winit::event::MouseScrollDelta;
 use std::rc::Rc;
 use io::Mesh;
 use crate::io::load_mesh_as_ndarray;
+use crate::calculations::{cross_product, dot_product, mat_mul, normalize, subtract};
 
 
 struct RasterizerApp {
@@ -30,26 +31,44 @@ struct RasterizerApp {
 const PAN_SENS: f32 = 0.01;
 const ORBIT_SENS: f32 = 0.005;
 const DOLLY_SENS: f32 = 0.5;
+const FOV_Y: f32 = std::f32::consts::FRAC_PI_3;  // 60°
+const NEAR: f32 = 0.1;
+const FAR: f32 = 1000.0;
 
-  fn project(v: [f32;4], width: f32, height: f32) -> [f32; 3] {
-      let inv_z = 1.0 / v[2];
-      let ndc_x = v[0] * inv_z;
-      let ndc_y = v[1] * inv_z;
+const LIGHT_DIR: [f32; 3] = [0.3, -0.8, 0.5];  
+const AMBIENT:   f32      = 0.2;
+const BASE_COLOR: u32     = 0xFF_B6_C1;
 
-      let px = (ndc_x + 1.0) * 0.5 * width;
-      let py = (1.0 - ndc_y) * 0.5 * height;
+fn build_projection(fov_y: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
+    let f = 1.0 / (fov_y * 0.5).tan();
+    let d = far / (far - near);
+    [
+        [f / aspect, 0.0, 0.0,        0.0],
+        [0.0,        f,   0.0,        0.0],
+        [0.0,        0.0, d,         -near * d],
+        [0.0,        0.0, 1.0,        0.0],
+    ]
+}
 
-      [px, py, v[2]]
+fn to_screen(v_clip: [f32; 4], width: f32, height: f32) -> [f32; 3] {
+    let inv_w = 1.0 / v_clip[3];
+    let ndc_x = v_clip[0] * inv_w;
+    let ndc_y = v_clip[1] * inv_w;
+    let ndc_z = v_clip[2] * inv_w;
+
+    let px = (ndc_x + 1.0) * 0.5 * width;
+    let py = (1.0 - ndc_y) * 0.5 * height;
+
+    [px, py, ndc_z]
+}
+
+  fn shade(color: u32, intensity: f32) -> u32 {
+      let r = (((color >> 16) & 0xFF) as f32 * intensity) as u32 & 0xFF;
+      let g = (((color >>  8) & 0xFF) as f32 * intensity) as u32 & 0xFF;
+      let b = (( color        & 0xFF) as f32 * intensity) as u32 & 0xFF;
+      0xFF000000 | (r << 16) | (g << 8) | b
   }
 
-  fn mat_mul(a: &[[f32;4];4],b: [f32;4]) -> [f32;4]{
-    let row1 = a[0][0] * b[0] + a[0][1] * b[1] + a[0][2] * b[2] + a[0][3] * b[3];
-    let row2 = a[1][0] * b[0] + a[1][1] * b[1] + a[1][2] * b[2] + a[1][3] * b[3];
-    let row3 = a[2][0] * b[0] + a[2][1] * b[1] + a[2][2] * b[2] + a[2][3] * b[3];
-    let row4 = a[3][0] * b[0] + a[3][1] * b[1] + a[3][2] * b[2] + a[3][3] * b[3];
-
-    [row1, row2, row3, row4]
-}
 impl ApplicationHandler for RasterizerApp {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let window_attributes = Window::default_attributes()
@@ -79,7 +98,7 @@ impl ApplicationHandler for RasterizerApp {
                 self.modifiers = new.state();
             }
 
-            WindowEvent::MouseInput {state, button, ..}=> {
+            WindowEvent::MouseInput {state, ..}=> {
                 self.mouse_down = state == ElementState::Pressed;
                 if !self.mouse_down { self.last_cursor = None; }
             }
@@ -135,23 +154,43 @@ impl ApplicationHandler for RasterizerApp {
                 self.depth.fill(f32::INFINITY);
 
                 let view = self.camera_state.build_view();
+                let proj = build_projection(FOV_Y, width / height, NEAR, FAR);
+
+                let light = normalize(LIGHT_DIR);
+                let neg_light = [-light[0], -light[1], -light[2]];
+
+
 
                 for triangle in self.mesh.triangles.iter(){
 
-                    let v0 = mat_mul(&view, triangle.v0);
-                    let v1 = mat_mul(&view, triangle.v1);
-                    let v2 = mat_mul(&view, triangle.v2);
+                    let v0_cam = mat_mul(&view, triangle.v0);
+                    let v1_cam = mat_mul(&view, triangle.v1);
+                    let v2_cam = mat_mul(&view, triangle.v2);
 
-                    if v0[2] <= 0.0 || v1[2] <= 0.0 || v2[2] <= 0.0 {continue; }
+                    if v0_cam[2] <= NEAR || v1_cam[2] <= NEAR || v2_cam[2] <= NEAR { continue; }
 
-                    let p0 = project(v0, width, height);
-                    let p1 = project(v1, width, height);
-                    let p2 = project(v2, width, height);
+                    let v0_clip = mat_mul(&proj, v0_cam);
+                    let v1_clip = mat_mul(&proj, v1_cam);
+                    let v2_clip = mat_mul(&proj, v2_cam);
+
+                    let p0 = to_screen(v0_clip, width, height);
+                    let p1 = to_screen(v1_clip, width, height);
+                    let p2 = to_screen(v2_clip, width, height);
+
+                    let n0 = [triangle.v0[0], triangle.v0[1], triangle.v0[2]];
+                    let n1 = [triangle.v1[0], triangle.v1[1], triangle.v1[2]];
+                    let n2 = [triangle.v2[0], triangle.v2[1], triangle.v2[2]];
+
+                    let normal = normalize(cross_product(subtract(n1, n0), subtract(n2, n0)));
+
+                    let diffuse = dot_product(normal, neg_light).max(0.0);
+                    let intensity = AMBIENT + (1.0 - AMBIENT) * diffuse;
+                    let color = shade(BASE_COLOR, intensity);
 
                     raster::draw_triangle(
                        &mut buffer, &mut self.depth, size.width as usize, size.height as usize,
-                        p0, p1, p2);
-                    
+                        p0, p1, p2, color);
+
                 }
 
                 buffer.present().unwrap();

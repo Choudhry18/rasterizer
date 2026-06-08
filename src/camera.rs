@@ -1,3 +1,4 @@
+use crate::calculations::{subtract, normalize, dot_product, cross_product, add};
 pub struct CameraState {
     cam_to: [f32; 3],
     cam_up: [f32; 3],
@@ -61,29 +62,4 @@ impl CameraState {
     pub fn dolly(&mut self, amount: f32) {
         self.radius = (self.radius - amount).max(0.1);
     }
-}
-
-fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn subtract(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot_product(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn normalize(a: [f32; 3]) -> [f32; 3] {
-    let magnitude = dot_product(a, a).sqrt();
-    a.map(|x| x / magnitude)
-}
-
-fn cross_product(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
