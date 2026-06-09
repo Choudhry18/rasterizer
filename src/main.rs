@@ -21,13 +21,19 @@ struct RasterizerApp {
     window: Option<Rc<Window>>,
     context: Option<softbuffer::Context<Rc<Window>>>,
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
-    mesh: Mesh,
+    models: Vec<Model>,
     depth: Vec<f32>,
     camera_state: camera::CameraState,
     mouse_down: bool,
     last_cursor: Option<(f64, f64)>,
     modifiers: ModifiersState,
 }
+
+struct Model {
+    mesh: Mesh,
+    transform: [[f32;4];4],
+}
+
 const PAN_SENS: f32 = 0.01;
 const ORBIT_SENS: f32 = 0.005;
 const DOLLY_SENS: f32 = 0.5;
@@ -160,37 +166,39 @@ impl ApplicationHandler for RasterizerApp {
                 let neg_light = [-light[0], -light[1], -light[2]];
 
 
+                for model in self.models.iter(){
+                    for triangle in model.mesh.triangles.iter(){
 
-                for triangle in self.mesh.triangles.iter(){
+                        let w0 = mat_mul(&model.transform, triangle.v0);
+                        let w1 = mat_mul(&model.transform, triangle.v1); 
+                        let w2 = mat_mul(&model.transform, triangle.v2);
 
-                    let v0_cam = mat_mul(&view, triangle.v0);
-                    let v1_cam = mat_mul(&view, triangle.v1);
-                    let v2_cam = mat_mul(&view, triangle.v2);
+                        let v0_cam = mat_mul(&view, w0);
+                        let v1_cam = mat_mul(&view, w1);
+                        let v2_cam = mat_mul(&view, w2);
 
-                    if v0_cam[2] <= NEAR || v1_cam[2] <= NEAR || v2_cam[2] <= NEAR { continue; }
+                        if v0_cam[2] <= NEAR || v1_cam[2] <= NEAR || v2_cam[2] <= NEAR { continue; }
 
-                    let v0_clip = mat_mul(&proj, v0_cam);
-                    let v1_clip = mat_mul(&proj, v1_cam);
-                    let v2_clip = mat_mul(&proj, v2_cam);
+                        let v0_clip = mat_mul(&proj, v0_cam);
+                        let v1_clip = mat_mul(&proj, v1_cam);
+                        let v2_clip = mat_mul(&proj, v2_cam);
 
-                    let p0 = to_screen(v0_clip, width, height);
-                    let p1 = to_screen(v1_clip, width, height);
-                    let p2 = to_screen(v2_clip, width, height);
+                        let p0 = to_screen(v0_clip, width, height);
+                        let p1 = to_screen(v1_clip, width, height);
+                        let p2 = to_screen(v2_clip, width, height);
 
-                    let n0 = [triangle.v0[0], triangle.v0[1], triangle.v0[2]];
-                    let n1 = [triangle.v1[0], triangle.v1[1], triangle.v1[2]];
-                    let n2 = [triangle.v2[0], triangle.v2[1], triangle.v2[2]];
 
-                    let normal = normalize(cross_product(subtract(n1, n0), subtract(n2, n0)));
+                        let normal = normalize(cross_product(subtract(w1[..3].try_into().unwrap(), w0[..3].try_into().unwrap()), subtract(w2[..3].try_into().unwrap(), w0[..3].try_into().unwrap())));
 
-                    let diffuse = dot_product(normal, neg_light).max(0.0);
-                    let intensity = AMBIENT + (1.0 - AMBIENT) * diffuse;
-                    let color = shade(BASE_COLOR, intensity);
+                        let diffuse = dot_product(normal, neg_light).max(0.0);
+                        let intensity = AMBIENT + (1.0 - AMBIENT) * diffuse;
+                        let color = shade(BASE_COLOR, intensity);
 
-                    raster::draw_triangle(
-                       &mut buffer, &mut self.depth, size.width as usize, size.height as usize,
-                        p0, p1, p2, color);
+                        raster::draw_triangle(
+                        &mut buffer, &mut self.depth, size.width as usize, size.height as usize,
+                            p0, p1, p2, color);
 
+                    }
                 }
 
                 buffer.present().unwrap();
@@ -228,7 +236,14 @@ fn main() {
         window: None,
         context: None,
         surface: None,
-        mesh: mesh,
+        models: vec![Model{
+            mesh,
+            transform : [[0.707 , 0.0, 0.707, 0.0],
+                         [0.0, 1.0, 0.0, 0.0],
+                         [-0.707, 0.0, 0.707, 0.0],
+                         [0.0, 0.0, 0.0, 1.0]],
+                        }
+                    ],
         depth: Vec::new(),
         camera_state: camera::CameraState::new(
             [0.0, 0.0, 0.0],         // cam_to (target)
