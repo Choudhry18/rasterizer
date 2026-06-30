@@ -9,7 +9,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 use winit::event::ElementState;
-use winit::keyboard::ModifiersState;
+use winit::keyboard::{Key, ModifiersState};
 use winit::event::MouseScrollDelta;
 use std::rc::Rc;
 use io::Mesh;
@@ -27,6 +27,7 @@ struct RasterizerApp {
     mouse_down: bool,
     last_cursor: Option<(f64, f64)>,
     modifiers: ModifiersState,
+    fov_y: f32,
 }
 
 struct Model {
@@ -54,7 +55,10 @@ struct Model {
 const PAN_SENS: f32 = 0.01;
 const ORBIT_SENS: f32 = 0.005;
 const DOLLY_SENS: f32 = 0.5;
-const FOV_Y: f32 = std::f32::consts::FRAC_PI_3;  // 60°
+const FOV_Y: f32 = std::f32::consts::FRAC_PI_3;  // 60° — starting field of view
+const FOV_STEP: f32 = std::f32::consts::PI / 180.0;  // 1° per +/- keypress
+const FOV_MIN: f32 = std::f32::consts::PI / 18.0;    // 10°
+const FOV_MAX: f32 = std::f32::consts::PI * 17.0 / 18.0;  // 170°
 const NEAR: f32 = 0.1;
 const FAR: f32 = 1000.0;
 
@@ -165,6 +169,19 @@ impl ApplicationHandler for RasterizerApp {
                 self.modifiers = new.state();
             }
 
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed {
+                    if let Key::Character(c) = &event.logical_key {
+                        match c.as_str() {
+                            // "=" so widening doesn't require holding Shift for "+"
+                            "+" | "=" => self.fov_y = (self.fov_y + FOV_STEP).min(FOV_MAX),
+                            "-" | "_" => self.fov_y = (self.fov_y - FOV_STEP).max(FOV_MIN),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
             WindowEvent::MouseInput {state, ..}=> {
                 self.mouse_down = state == ElementState::Pressed;
                 if !self.mouse_down { self.last_cursor = None; }
@@ -221,7 +238,7 @@ impl ApplicationHandler for RasterizerApp {
                 self.depth.fill(f32::INFINITY);
 
                 let view = self.camera_state.build_view();
-                let proj = build_projection(FOV_Y, width / height, NEAR, FAR);
+                let proj = build_projection(self.fov_y, width / height, NEAR, FAR);
 
                 let light = normalize(LIGHT_DIR);
                 let neg_light = [-light[0], -light[1], -light[2]];
@@ -326,7 +343,8 @@ fn main() {
         ),
         mouse_down: false,
         last_cursor: None,
-        modifiers: ModifiersState::empty()
+        modifiers: ModifiersState::empty(),
+        fov_y: FOV_Y,
 
     };
 
