@@ -22,6 +22,10 @@ impl CameraState {
         Self { cam_to, cam_up, yaw, pitch, radius }
     }
 
+    pub fn get_camera_to(&self) -> [f32; 3]{
+        self.cam_to
+    }
+
     /// Recover the eye (camera) position from the orbit parameters using
     /// spherical coordinates around the target.
     ///

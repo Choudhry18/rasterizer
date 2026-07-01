@@ -1,21 +1,20 @@
+mod calculations;
+mod camera;
 mod io;
 mod raster;
-mod camera;
-mod calculations;
 
+use crate::calculations::{cross_product, dot_product, mat_mul, normalize, subtract};
+use crate::io::{load_mesh_as_ndarray, try_load_mesh_as_ndarray};
+use io::Mesh;
 use std::num::NonZeroU32;
+use std::rc::Rc;
 use winit::application::ApplicationHandler;
+use winit::event::ElementState;
+use winit::event::MouseScrollDelta;
 use winit::event::WindowEvent;
 use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::Window;
-use winit::event::ElementState;
 use winit::keyboard::{Key, ModifiersState};
-use winit::event::MouseScrollDelta;
-use std::rc::Rc;
-use io::Mesh;
-use crate::io::load_mesh_as_ndarray;
-use crate::calculations::{cross_product, dot_product, mat_mul, normalize, subtract};
-
+use winit::window::Window;
 
 struct RasterizerApp {
     window: Option<Rc<Window>>,
@@ -49,22 +48,122 @@ struct Model {
     ///          [ −sin θ   0   cos θ   0 ]
     ///          [    0     0     0     1 ]
     /// ```
-    transform: [[f32;4];4],
+    transform: [[f32; 4]; 4],
 }
 
 const PAN_SENS: f32 = 0.01;
 const ORBIT_SENS: f32 = 0.005;
 const DOLLY_SENS: f32 = 0.5;
-const FOV_Y: f32 = std::f32::consts::FRAC_PI_3;  // 60° — starting field of view
-const FOV_STEP: f32 = std::f32::consts::PI / 180.0;  // 1° per +/- keypress
-const FOV_MIN: f32 = std::f32::consts::PI / 18.0;    // 10°
-const FOV_MAX: f32 = std::f32::consts::PI * 17.0 / 18.0;  // 170°
+const FOV_Y: f32 = std::f32::consts::FRAC_PI_3; // 60° — starting field of view
+const FOV_STEP: f32 = std::f32::consts::PI / 180.0; // 1° per +/- keypress
+const FOV_MIN: f32 = std::f32::consts::PI / 18.0; // 10°
+const FOV_MAX: f32 = std::f32::consts::PI * 17.0 / 18.0; // 170°
 const NEAR: f32 = 0.1;
 const FAR: f32 = 1000.0;
 
-const LIGHT_DIR: [f32; 3] = [0.3, -0.8, 0.5];  
-const AMBIENT:   f32      = 0.2;
-const BASE_COLOR: u32     = 0xFF_B6_C1;
+const LIGHT_DIR: [f32; 3] = [0.3, -0.8, 0.5];
+const AMBIENT: f32 = 0.2;
+const BASE_COLOR: u32 = 0xFF_B6_C1;
+const GRID_HALF_EXTENT: i32 = 10;
+const GRID_STEP: f32 = 1.0;
+const GRID_COLOR: u32 = 0xFF_3A_3A_55;
+const GRID_AXIS_X_COLOR: u32 = 0xFF_7A_3A_3A;
+const GRID_AXIS_Z_COLOR: u32 = 0xFF_3A_5F_7A;
+
+fn default_model_transform() -> [[f32; 4]; 4] {
+    [
+        [0.707, 0.0, 0.707, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [-0.707, 0.0, 0.707, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+fn drop_at_camera_target(target: [f32; 3]) -> [[f32; 4]; 4] {
+    [
+        [0.707, 0.0, 0.707, target[0]],
+        [0.0, 1.0, 0.0, target[1]],
+        [-0.707, 0.0, 0.707, target[2]],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+fn model_position(model: &Model) -> [f32; 3] {
+    [
+        model.transform[0][3],
+        model.transform[1][3],
+        model.transform[2][3],
+    ]
+}
+
+fn mesh_bounds(mesh: &Mesh) -> Option<([f32; 3], [f32; 3])> {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    let mut found_vertex = false;
+
+    for triangle in &mesh.triangles {
+        for vertex in [triangle.v0, triangle.v1, triangle.v2] {
+            found_vertex = true;
+            for axis in 0..3 {
+                min[axis] = min[axis].min(vertex[axis]);
+                max[axis] = max[axis].max(vertex[axis]);
+            }
+        }
+    }
+
+    found_vertex.then_some((min, max))
+}
+
+fn transformed_mesh_bounds(model: &Model) -> Option<([f32; 3], [f32; 3])> {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    let mut found_vertex = false;
+
+    for triangle in &model.mesh.triangles {
+        for vertex in [triangle.v0, triangle.v1, triangle.v2] {
+            found_vertex = true;
+            let transformed = mat_mul(&model.transform, vertex);
+            for axis in 0..3 {
+                min[axis] = min[axis].min(transformed[axis]);
+                max[axis] = max[axis].max(transformed[axis]);
+            }
+        }
+    }
+
+    found_vertex.then_some((min, max))
+}
+
+fn print_model_debug(models: &[Model], camera_target: [f32; 3]) {
+    eprintln!(
+        "Camera target: x={:.2}, y={:.2}, z={:.2}",
+        camera_target[0], camera_target[1], camera_target[2]
+    );
+    eprintln!("Models:");
+    for (idx, model) in models.iter().enumerate() {
+        let pos = model_position(model);
+        eprintln!(
+            "  {idx}: position x={:.2}, y={:.2}, z={:.2}, triangles={}",
+            pos[0],
+            pos[1],
+            pos[2],
+            model.mesh.triangles.len()
+        );
+
+        if let Some((min, max)) = mesh_bounds(&model.mesh) {
+            eprintln!(
+                "     local bounds min=({:.2}, {:.2}, {:.2}) max=({:.2}, {:.2}, {:.2})",
+                min[0], min[1], min[2], max[0], max[1], max[2]
+            );
+        }
+
+        if let Some((min, max)) = transformed_mesh_bounds(model) {
+            eprintln!(
+                "     world bounds min=({:.2}, {:.2}, {:.2}) max=({:.2}, {:.2}, {:.2})",
+                min[0], min[1], min[2], max[0], max[1], max[2]
+            );
+        }
+    }
+}
 
 /// Perspective projection matrix (camera → clip space).
 ///
@@ -92,10 +191,10 @@ fn build_projection(fov_y: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 
     let f = 1.0 / (fov_y * 0.5).tan();
     let d = far / (far - near);
     [
-        [f / aspect, 0.0, 0.0,        0.0],
-        [0.0,        f,   0.0,        0.0],
-        [0.0,        0.0, d,         -near * d],
-        [0.0,        0.0, 1.0,        0.0],
+        [f / aspect, 0.0, 0.0, 0.0],
+        [0.0, f, 0.0, 0.0],
+        [0.0, 0.0, d, -near * d],
+        [0.0, 0.0, 1.0, 0.0],
     ]
 }
 
@@ -129,24 +228,114 @@ fn to_screen(v_clip: [f32; 4], width: f32, height: f32) -> [f32; 3] {
     [px, py, ndc_z]
 }
 
-  /// Scale a packed `0xAARRGGBB` color's RGB channels by a lighting `intensity`.
-  ///
-  /// Each channel is multiplied independently and re-clamped to a byte; alpha is
-  /// forced opaque.
-  fn shade(color: u32, intensity: f32) -> u32 {
-      let r = (((color >> 16) & 0xFF) as f32 * intensity) as u32 & 0xFF;
-      let g = (((color >>  8) & 0xFF) as f32 * intensity) as u32 & 0xFF;
-      let b = (( color        & 0xFF) as f32 * intensity) as u32 & 0xFF;
-      0xFF000000 | (r << 16) | (g << 8) | b
-  }
+fn clip_line_to_near(mut a: [f32; 4], mut b: [f32; 4]) -> Option<([f32; 4], [f32; 4])> {
+    if a[2] <= NEAR && b[2] <= NEAR {
+        return None;
+    }
+
+    if a[2] <= NEAR {
+        let t = (NEAR - a[2]) / (b[2] - a[2]);
+        a = [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            NEAR,
+            a[3] + (b[3] - a[3]) * t,
+        ];
+    }
+
+    if b[2] <= NEAR {
+        let t = (NEAR - b[2]) / (a[2] - b[2]);
+        b = [
+            b[0] + (a[0] - b[0]) * t,
+            b[1] + (a[1] - b[1]) * t,
+            NEAR,
+            b[3] + (a[3] - b[3]) * t,
+        ];
+    }
+
+    Some((a, b))
+}
+
+fn draw_world_line(
+    buffer: &mut [u32],
+    width_px: usize,
+    height_px: usize,
+    view: &[[f32; 4]; 4],
+    proj: &[[f32; 4]; 4],
+    a_world: [f32; 4],
+    b_world: [f32; 4],
+    color: u32,
+) {
+    let a_cam = mat_mul(view, a_world);
+    let b_cam = mat_mul(view, b_world);
+
+    let Some((a_cam, b_cam)) = clip_line_to_near(a_cam, b_cam) else {
+        return;
+    };
+
+    let a_clip = mat_mul(proj, a_cam);
+    let b_clip = mat_mul(proj, b_cam);
+    let a_screen = to_screen(a_clip, width_px as f32, height_px as f32);
+    let b_screen = to_screen(b_clip, width_px as f32, height_px as f32);
+
+    raster::draw_line(buffer, width_px, height_px, a_screen, b_screen, color);
+}
+
+fn draw_grid(
+    buffer: &mut [u32],
+    width_px: usize,
+    height_px: usize,
+    view: &[[f32; 4]; 4],
+    proj: &[[f32; 4]; 4],
+) {
+    let extent = GRID_HALF_EXTENT as f32 * GRID_STEP;
+
+    for i in -GRID_HALF_EXTENT..=GRID_HALF_EXTENT {
+        let coord = i as f32 * GRID_STEP;
+
+        let z_color = if i == 0 { GRID_AXIS_Z_COLOR } else { GRID_COLOR };
+        draw_world_line(
+            buffer,
+            width_px,
+            height_px,
+            view,
+            proj,
+            [coord, 0.0, -extent, 1.0],
+            [coord, 0.0, extent, 1.0],
+            z_color,
+        );
+
+        let x_color = if i == 0 { GRID_AXIS_X_COLOR } else { GRID_COLOR };
+        draw_world_line(
+            buffer,
+            width_px,
+            height_px,
+            view,
+            proj,
+            [-extent, 0.0, coord, 1.0],
+            [extent, 0.0, coord, 1.0],
+            x_color,
+        );
+    }
+}
+
+/// Scale a packed `0xAARRGGBB` color's RGB channels by a lighting `intensity`.
+///
+/// Each channel is multiplied independently and re-clamped to a byte; alpha is
+/// forced opaque.
+fn shade(color: u32, intensity: f32) -> u32 {
+    let r = (((color >> 16) & 0xFF) as f32 * intensity) as u32 & 0xFF;
+    let g = (((color >> 8) & 0xFF) as f32 * intensity) as u32 & 0xFF;
+    let b = ((color & 0xFF) as f32 * intensity) as u32 & 0xFF;
+    0xFF000000 | (r << 16) | (g << 8) | b
+}
 
 impl ApplicationHandler for RasterizerApp {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window_attributes = Window::default_attributes()
-            .with_title("Rasterizer");
-        
+        let window_attributes = Window::default_attributes().with_title("Rasterizer");
+
         let window = Rc::new(event_loop.create_window(window_attributes).unwrap());
-        
+
         let context = softbuffer::Context::new(window.clone()).unwrap();
         let surface = softbuffer::Surface::new(&context, window.clone()).unwrap();
 
@@ -165,7 +354,7 @@ impl ApplicationHandler for RasterizerApp {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-             WindowEvent::ModifiersChanged(new) => {
+            WindowEvent::ModifiersChanged(new) => {
                 self.modifiers = new.state();
             }
 
@@ -182,31 +371,47 @@ impl ApplicationHandler for RasterizerApp {
                 }
             }
 
-            WindowEvent::MouseInput {state, ..}=> {
+            WindowEvent::MouseInput { state, .. } => {
                 self.mouse_down = state == ElementState::Pressed;
-                if !self.mouse_down { self.last_cursor = None; }
+                if !self.mouse_down {
+                    self.last_cursor = None;
+                }
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
-                    MouseScrollDelta::PixelDelta(p)   => (p.y as f32) * 0.01,
+                    MouseScrollDelta::PixelDelta(p) => (p.y as f32) * 0.01,
                 };
                 self.camera_state.dolly(amount * DOLLY_SENS);
             }
 
-            WindowEvent::CursorMoved {position, .. } => {
+            WindowEvent::DroppedFile(path) => match try_load_mesh_as_ndarray(&path) {
+                Ok(mesh) => {
+                    let target = self.camera_state.get_camera_to();
+                    self.models.push(Model {
+                        mesh,
+                        transform: drop_at_camera_target(target),
+                    });
+                    eprintln!("Loaded dropped mesh: {}", path.display());
+                    print_model_debug(&self.models, target);
+                }
+                Err(err) => {
+                    eprintln!("Failed to load dropped mesh {}: {err}", path.display());
+                }
+            },
 
+            WindowEvent::CursorMoved { position, .. } => {
                 let pos = (position.x, position.y);
                 if self.mouse_down {
                     if let Some((lx, ly)) = self.last_cursor {
                         let dx = (pos.0 - lx) as f32;
                         let dy = (pos.1 - ly) as f32;
 
-                        if self.modifiers.control_key(){
+                        if self.modifiers.control_key() {
                             self.camera_state.orbit(-dx * ORBIT_SENS, -dy * ORBIT_SENS);
-                        }else{
-                            self.camera_state.pan(-dx * PAN_SENS, dy * PAN_SENS); 
+                        } else {
+                            self.camera_state.pan(-dx * PAN_SENS, dy * PAN_SENS);
                         }
                     }
                 }
@@ -214,25 +419,31 @@ impl ApplicationHandler for RasterizerApp {
             }
 
             WindowEvent::RedrawRequested => {
-                let (Some(surface), Some(window)) = (&mut self.surface, &self.window) else { return; };
+                let (Some(surface), Some(window)) = (&mut self.surface, &self.window) else {
+                    return;
+                };
                 let size = window.inner_size();
-                
-                if size.width == 0 || size.height == 0 { return; }
 
-                surface.resize(
-                    NonZeroU32::new(size.width).unwrap(),
-                    NonZeroU32::new(size.height).unwrap(),
-                ).unwrap();
-                
+                if size.width == 0 || size.height == 0 {
+                    return;
+                }
+
+                surface
+                    .resize(
+                        NonZeroU32::new(size.width).unwrap(),
+                        NonZeroU32::new(size.height).unwrap(),
+                    )
+                    .unwrap();
+
                 let mut buffer = surface.buffer_mut().unwrap();
 
                 for pixel in buffer.iter_mut() {
-                    *pixel = 0xFF_1A_1A_2E; 
+                    *pixel = 0xFF_1A_1A_2E;
                 }
 
                 let width = size.width as f32;
                 let height = size.height as f32;
-                
+
                 let pixel_count = size.width as usize * size.height as usize;
                 self.depth.resize(pixel_count, f32::INFINITY);
                 self.depth.fill(f32::INFINITY);
@@ -240,13 +451,19 @@ impl ApplicationHandler for RasterizerApp {
                 let view = self.camera_state.build_view();
                 let proj = build_projection(self.fov_y, width / height, NEAR, FAR);
 
+                draw_grid(
+                    &mut buffer,
+                    size.width as usize,
+                    size.height as usize,
+                    &view,
+                    &proj,
+                );
+
                 let light = normalize(LIGHT_DIR);
                 let neg_light = [-light[0], -light[1], -light[2]];
 
-
-                for model in self.models.iter(){
-                    for triangle in model.mesh.triangles.iter(){
-
+                for model in self.models.iter() {
+                    for triangle in model.mesh.triangles.iter() {
                         // Vertex pipeline, one mat_mul per stage (see calculations::mat_mul):
                         // Stage 1 — model → world: apply the model matrix.
                         let w0 = mat_mul(&model.transform, triangle.v0);
@@ -260,7 +477,9 @@ impl ApplicationHandler for RasterizerApp {
 
                         // Near-plane cull: drop triangles with any vertex at/behind NEAR
                         // (left-handed, so the camera looks down +Z).
-                        if v0_cam[2] <= NEAR || v1_cam[2] <= NEAR || v2_cam[2] <= NEAR { continue; }
+                        if v0_cam[2] <= NEAR || v1_cam[2] <= NEAR || v2_cam[2] <= NEAR {
+                            continue;
+                        }
 
                         // Stage 3 — camera → clip: apply the projection matrix (build_projection).
                         let v0_clip = mat_mul(&proj, v0_cam);
@@ -272,10 +491,12 @@ impl ApplicationHandler for RasterizerApp {
                         let p1 = to_screen(v1_clip, width, height);
                         let p2 = to_screen(v2_clip, width, height);
 
-
                         // Face normal from two world-space edges: N = normalize((w1−w0) × (w2−w0)).
                         // Winding order of v0,v1,v2 decides which side N points.
-                        let normal = normalize(cross_product(subtract(w1[..3].try_into().unwrap(), w0[..3].try_into().unwrap()), subtract(w2[..3].try_into().unwrap(), w0[..3].try_into().unwrap())));
+                        let normal = normalize(cross_product(
+                            subtract(w1[..3].try_into().unwrap(), w0[..3].try_into().unwrap()),
+                            subtract(w2[..3].try_into().unwrap(), w0[..3].try_into().unwrap()),
+                        ));
 
                         // Lambert diffuse: bright when the face points at the light (N·(−L) → 1),
                         // clamped to 0 when facing away; ambient fills the rest.
@@ -284,9 +505,15 @@ impl ApplicationHandler for RasterizerApp {
                         let color = shade(BASE_COLOR, intensity);
 
                         raster::draw_triangle(
-                        &mut buffer, &mut self.depth, size.width as usize, size.height as usize,
-                            p0, p1, p2, color);
-
+                            &mut buffer,
+                            &mut self.depth,
+                            size.width as usize,
+                            size.height as usize,
+                            p0,
+                            p1,
+                            p2,
+                            color,
+                        );
                     }
                 }
 
@@ -304,48 +531,41 @@ impl ApplicationHandler for RasterizerApp {
 }
 
 fn main() {
-
     let args: Vec<String> = std::env::args().collect();
 
-    if args.len() < 2 {
-        eprintln!("Error: Missing mesh file path.");
-        eprintln!("Usage: cargo run -- <path_to_obj_file>");
-        std::process::exit(1);
-
-    }
-
-    let mesh_path = &args[1];
-
-    let mesh = load_mesh_as_ndarray(mesh_path);
+    let models = if args.len() >= 2 {
+        args[1..]
+            .iter()
+            .map(|mesh_path| Model {
+                mesh: load_mesh_as_ndarray(mesh_path),
+                transform: default_model_transform(),
+            })
+            .collect()
+    } else {
+        eprintln!("No startup mesh provided. Drag and drop an OBJ file into the window.");
+        Vec::new()
+    };
 
     let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(ControlFlow::Poll); 
+    event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = RasterizerApp {
         window: None,
         context: None,
         surface: None,
-        models: vec![Model{
-            mesh,
-            transform : [[0.707,  0.0, 0.707, 0.0],
-                         [0.0,    1.0, 0.0,   0.0],
-                         [-0.707, 0.0, 0.707, 0.0],
-                         [0.0,    0.0, 0.0,   1.0]],
-                        }
-                    ],
+        models,
         depth: Vec::new(),
         camera_state: camera::CameraState::new(
-            [0.0, 0.0, 0.0],         // cam_to (target)
-            [0.0, 1.0, 0.0],         // cam_up (world up)
-            std::f32::consts::PI,    // yaw — start camera on -Z (behind target)
-            0.0,                     // pitch — horizon level
-            8.0,                     // radius — 8 units from target
+            [0.0, 0.0, 0.0],      // cam_to (target)
+            [0.0, 1.0, 0.0],      // cam_up (world up)
+            std::f32::consts::PI, // yaw — start camera on -Z (behind target)
+            0.0,                  // pitch — horizon level
+            8.0,                  // radius — 8 units from target
         ),
         mouse_down: false,
         last_cursor: None,
         modifiers: ModifiersState::empty(),
         fov_y: FOV_Y,
-
     };
 
     event_loop.run_app(&mut app).unwrap();

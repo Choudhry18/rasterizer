@@ -4,6 +4,31 @@ pub fn edge(a:[f32;3] ,b:[f32;3], p:[f32;3]) -> f32{
 
 }
 
+pub fn draw_line(color_buf: &mut [u32],
+      width: usize,
+      height: usize,
+      p0: [f32; 3],
+      p1: [f32; 3],
+      color: u32,
+    ){
+
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+    let steps = dx.abs().max(dy.abs()) as i32;
+    if steps == 0 {return;}
+
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let x = (p0[0] + dx * t).round() as i32;
+        let y = (p0[1] + dy * t).round() as i32;
+
+        if x >= 0 && x < width as i32 && y >= 0 && y < height as i32 {
+            let idx = y as usize * width + x as usize;
+            color_buf[idx] = color;
+        }
+    }
+}
+
 pub fn draw_triangle(color_buf: &mut [u32], depth: &mut Vec<f32>,
       width: usize,
       height: usize,
