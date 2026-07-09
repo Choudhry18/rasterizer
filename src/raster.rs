@@ -4,7 +4,7 @@ pub fn edge(a:[f32;3] ,b:[f32;3], p:[f32;3]) -> f32{
 
 }
 
-pub fn draw_triangle(color_buf: &mut [u32], depth: &mut Vec<f32>,
+pub fn draw_triangle(color_buf: &mut [u32], depth: &mut [f32],
       width: usize,
       height: usize,
       v0: [f32; 3],  
