@@ -97,7 +97,12 @@ pub fn load_glb_path(path: impl AsRef<Path>) -> Result<Mesh, MeshError> {
 /// Positions only; normals/UVs/materials are ignored, matching [`load_obj`].
 #[cfg(feature = "gltf")]
 pub fn load_glb(bytes: &[u8]) -> Result<Mesh, MeshError> {
-    let gltf = gltf::Gltf::from_slice(bytes).map_err(|e| MeshError::Gltf(e.to_string()))?;
+    // Skip validation: we only read positions, and strict validation rejects
+    // otherwise-fine files over features we never touch (e.g. a required
+    // EXT_texture_webp texture extension). Malformed containers/JSON still
+    // error out of the parse itself.
+    let gltf = gltf::Gltf::from_slice_without_validation(bytes)
+        .map_err(|e| MeshError::Gltf(e.to_string()))?;
     let Some(blob) = gltf.blob.as_deref() else {
         return Err(MeshError::Unsupported("glTF without an embedded BIN chunk (external buffers)"));
     };
@@ -283,6 +288,31 @@ mod gltf_tests {
     #[test]
     fn load_glb_rejects_garbage() {
         assert!(load_glb(b"not a glb").is_err());
+    }
+
+    #[test]
+    fn load_glb_tolerates_unsupported_required_extensions() {
+        // Real generated models require texture extensions (EXT_texture_webp)
+        // that the positions-only loader never touches; they must still load.
+        let positions: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let bin: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let json = r#"{
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["EXT_texture_webp"],
+            "extensionsRequired": ["EXT_texture_webp"],
+            "scene": 0,
+            "scenes": [{"nodes": [0]}],
+            "nodes": [{"mesh": 0}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{
+                "bufferView": 0, "componentType": 5126, "count": 3,
+                "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]
+            }],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}],
+            "buffers": [{"byteLength": 36}]
+        }"#;
+        let mesh = load_glb(&build_glb(json, &bin)).unwrap();
+        assert_eq!(mesh.triangles.len(), 1);
     }
 
     #[test]
