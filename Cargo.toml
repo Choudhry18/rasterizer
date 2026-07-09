@@ -1,19 +1,20 @@
 [package]
 name = "rasterizer"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 
 [features]
 default = ["window", "obj"]
 window = ["dep:winit", "dep:softbuffer"]
 obj = ["dep:tobj"]
-gltf = ["dep:gltf"]
+gltf = ["dep:gltf", "dep:image"]
 
 [dependencies]
 winit = { version = "0.30.13", optional = true }
 softbuffer = { version = "0.4.8", optional = true }
 tobj = { version = "4.0.3", optional = true }
 gltf = { version = "1.4", optional = true, default-features = false, features = ["utils"] }
+image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg", "webp"] }
 
 [[bin]]
 name = "rasterizer"

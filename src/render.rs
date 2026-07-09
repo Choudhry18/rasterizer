@@ -177,7 +177,8 @@ pub fn render_frame(
 
         let diffuse = dot_product(normal, neg_light).max(0.0);
         let intensity = opts.ambient + (1.0 - opts.ambient) * diffuse;
-        let color_shaded = shade(opts.base_color, intensity);
+        let base = triangle.color.unwrap_or(opts.base_color);
+        let color_shaded = shade(base, intensity);
 
         raster::draw_triangle(color, depth, width, height, p0, p1, p2, color_shaded);
     }
@@ -229,6 +230,7 @@ mod tests {
                 v0: [-1.0, -1.0, 0.0, 1.0],
                 v1: [1.0, -1.0, 0.0, 1.0],
                 v2: [0.0, 1.0, 0.0, 1.0],
+                color: None,
             }],
         }
     }
@@ -306,6 +308,7 @@ mod tests {
                 v0: [0.0, 0.0, 0.0, 1.0],
                 v1: [0.0, 0.0, 0.0, 1.0],
                 v2: [0.0, 0.0, 0.0, 1.0],
+                color: None,
             }],
         };
         let opts = FrameOptions::default();
