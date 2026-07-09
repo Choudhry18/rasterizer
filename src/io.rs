@@ -96,11 +96,10 @@ pub fn load_glb_path(path: impl AsRef<Path>) -> Result<Mesh, MeshError> {
     load_glb(&bytes)
 }
 
-/// Average color of a material's base-color texture, cached per glTF image
-/// index (materials often share textures). `None` when the image is external,
-/// undecodable, or fully transparent.
+/// Decode a texture image embedded in the GLB BIN chunk. `None` when the
+/// image is external or undecodable.
 #[cfg(feature = "gltf")]
-fn average_image_color(image: gltf::Image, blob: &[u8]) -> Option<[f32; 3]> {
+fn decode_image(image: &gltf::Image, blob: &[u8]) -> Option<image::RgbaImage> {
     let gltf::image::Source::View { view, .. } = image.source() else {
         return None;
     };
@@ -109,7 +108,12 @@ fn average_image_color(image: gltf::Image, blob: &[u8]) -> Option<[f32; 3]> {
     }
     let bytes = blob.get(view.offset()..view.offset() + view.length())?;
     let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
+    (decoded.width() > 0 && decoded.height() > 0).then_some(decoded)
+}
 
+/// Average color of a decoded texture. `None` when fully transparent.
+#[cfg(feature = "gltf")]
+fn average_color(decoded: &image::RgbaImage) -> Option<[f32; 3]> {
     // Subsample large textures; ~65k samples is plenty for an average.
     let total = (decoded.width() as usize) * (decoded.height() as usize);
     let step = (total / 65536).max(1);
@@ -139,35 +143,110 @@ fn average_image_color(image: gltf::Image, blob: &[u8]) -> Option<[f32; 3]> {
     ])
 }
 
-/// Flat color for a primitive: average base-color texture times the material's
-/// baseColorFactor. `None` for the default material (no color information),
-/// so the renderer's own base color applies.
+#[cfg(feature = "gltf")]
+fn pack_color(rgb: [f32; 3]) -> u32 {
+    let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    0xFF000000 | (channel(rgb[0]) << 16) | (channel(rgb[1]) << 8) | channel(rgb[2])
+}
+
+/// Nearest-texel sample at a UV point (REPEAT wrapping), tinted by the
+/// material's baseColorFactor. `None` on transparent texels so the caller can
+/// fall back to the material's flat color.
+#[cfg(feature = "gltf")]
+fn sample_texture(decoded: &image::RgbaImage, uv: [f32; 2], factor: [f32; 4]) -> Option<u32> {
+    let wrap = |t: f32| {
+        let f = t - t.floor();
+        if f.is_finite() { f } else { 0.0 }
+    };
+    let x = ((wrap(uv[0]) * decoded.width() as f32) as u32).min(decoded.width() - 1);
+    let y = ((wrap(uv[1]) * decoded.height() as f32) as u32).min(decoded.height() - 1);
+    let [r, g, b, a] = decoded.get_pixel(x, y).0;
+    if a < 8 {
+        return None;
+    }
+    Some(pack_color([
+        r as f32 / 255.0 * factor[0],
+        g as f32 / 255.0 * factor[1],
+        b as f32 / 255.0 * factor[2],
+    ]))
+}
+
+/// Per-material shading info resolved once up front.
+#[cfg(feature = "gltf")]
+struct MaterialShading {
+    factor: [f32; 4],
+    image_index: Option<usize>,
+    tex_coord_set: u32,
+    /// Fallback flat color: average texture color times factor, or the
+    /// factor alone; `None` when the material carries no color information.
+    flat: Option<u32>,
+}
+
+/// The image a texture actually references. WebP textures carry the real
+/// image index in the EXT_texture_webp extension and may omit the core
+/// `source` field entirely (hence the `allow_empty_texture` gltf feature —
+/// the strict accessor panics on such files).
+#[cfg(feature = "gltf")]
+fn texture_image<'a>(
+    document: &'a gltf::Document,
+    texture: &gltf::Texture<'a>,
+) -> Option<gltf::Image<'a>> {
+    if let Some(index) = texture
+        .extension_value("EXT_texture_webp")
+        .and_then(|ext| ext.get("source"))
+        .and_then(|source| source.as_u64())
+    {
+        return document.images().nth(index as usize);
+    }
+    texture.source()
+}
+
+/// Resolve a material's shading info: texture reference, UV set, and the
+/// flat fallback color (average texture color times baseColorFactor).
 ///
 /// Color-space note: texture texels are sRGB and the factor is linear; we mix
 /// them directly, which is fine for a low-resolution preview.
 #[cfg(feature = "gltf")]
-fn primitive_base_color(
-    primitive: &gltf::Primitive,
+fn material_shading(
+    document: &gltf::Document,
+    material: &gltf::Material,
     blob: &[u8],
-    image_averages: &mut std::collections::HashMap<usize, Option<[f32; 3]>>,
-) -> Option<u32> {
-    let pbr = primitive.material().pbr_metallic_roughness();
+    decoded_images: &mut std::collections::HashMap<usize, Option<image::RgbaImage>>,
+) -> MaterialShading {
+    let pbr = material.pbr_metallic_roughness();
     let factor = pbr.base_color_factor();
-    let texture_average = pbr.base_color_texture().and_then(|info| {
-        let image = info.texture().source();
-        *image_averages
-            .entry(image.index())
-            .or_insert_with(|| average_image_color(image, blob))
-    });
 
-    let rgb = match texture_average {
-        Some(avg) => [avg[0] * factor[0], avg[1] * factor[1], avg[2] * factor[2]],
-        None if factor == [1.0, 1.0, 1.0, 1.0] => return None,
-        None => [factor[0], factor[1], factor[2]],
+    let mut image_index = None;
+    let mut tex_coord_set = 0;
+    if let Some(info) = pbr.base_color_texture() {
+        tex_coord_set = info.tex_coord();
+        if let Some(image) = texture_image(document, &info.texture()) {
+            let index = image.index();
+            let decoded = decoded_images
+                .entry(index)
+                .or_insert_with(|| decode_image(&image, blob));
+            if decoded.is_some() {
+                image_index = Some(index);
+            }
+        }
+    }
+
+    let texture_average = image_index
+        .and_then(|index| decoded_images.get(&index))
+        .and_then(|decoded| decoded.as_ref())
+        .and_then(average_color);
+
+    let flat = match texture_average {
+        Some(avg) => Some(pack_color([
+            avg[0] * factor[0],
+            avg[1] * factor[1],
+            avg[2] * factor[2],
+        ])),
+        None if factor == [1.0, 1.0, 1.0, 1.0] => None,
+        None => Some(pack_color([factor[0], factor[1], factor[2]])),
     };
 
-    let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
-    Some(0xFF000000 | (channel(rgb[0]) << 16) | (channel(rgb[1]) << 8) | channel(rgb[2]))
+    MaterialShading { factor, image_index, tex_coord_set, flat }
 }
 
 /// Load a binary glTF (.glb) with its buffer embedded in the BIN chunk.
@@ -214,7 +293,8 @@ pub fn load_glb(bytes: &[u8]) -> Result<Mesh, MeshError> {
         parent: &[[f32; 4]; 4],
         blob: &[u8],
         triangles: &mut Vec<Triangle>,
-        image_averages: &mut std::collections::HashMap<usize, Option<[f32; 3]>>,
+        materials: &[MaterialShading],
+        decoded_images: &std::collections::HashMap<usize, Option<image::RgbaImage>>,
     ) {
         // gltf returns column-major matrices; mat_mul is row-major — transpose.
         let local_cm = node.transform().matrix();
@@ -237,22 +317,53 @@ pub fn load_glb(bytes: &[u8]) -> Result<Mesh, MeshError> {
                 });
                 let Some(positions) = reader.read_positions() else { continue; };
                 let positions: Vec<[f32; 3]> = positions.collect();
-                let color = primitive_base_color(&primitive, blob, image_averages);
+
+                // Default material (index None) carries no color information.
+                let shading = primitive
+                    .material()
+                    .index()
+                    .and_then(|index| materials.get(index));
+                let texture = shading
+                    .and_then(|s| s.image_index)
+                    .and_then(|index| decoded_images.get(&index))
+                    .and_then(|decoded| decoded.as_ref());
+                let uvs: Option<Vec<[f32; 2]>> = match (shading, texture) {
+                    (Some(s), Some(_)) => reader
+                        .read_tex_coords(s.tex_coord_set)
+                        .map(|tc| tc.into_f32().collect()),
+                    _ => None,
+                };
+                let flat = shading.and_then(|s| s.flat);
 
                 let transformed = |idx: usize| -> Option<[f32; 4]> {
                     let p = positions.get(idx)?;
                     Some(crate::calculations::mat_mul(&world, [p[0], p[1], p[2], 1.0]))
+                };
+                // Flat color per triangle: sample the base-color texture at
+                // the UV centroid; fall back to the material's flat color.
+                let triangle_color = |a: usize, b: usize, c: usize| -> Option<u32> {
+                    let sampled = (|| {
+                        let (s, tex, uvs) = (shading?, texture?, uvs.as_ref()?);
+                        let (ua, ub, uc) = (uvs.get(a)?, uvs.get(b)?, uvs.get(c)?);
+                        let centroid = [
+                            (ua[0] + ub[0] + uc[0]) / 3.0,
+                            (ua[1] + ub[1] + uc[1]) / 3.0,
+                        ];
+                        sample_texture(tex, centroid, s.factor)
+                    })();
+                    sampled.or(flat)
                 };
 
                 match reader.read_indices() {
                     Some(indices) => {
                         let indices: Vec<u32> = indices.into_u32().collect();
                         for chunk in indices.chunks_exact(3) {
-                            if let (Some(v0), Some(v1), Some(v2)) = (
-                                transformed(chunk[0] as usize),
-                                transformed(chunk[1] as usize),
-                                transformed(chunk[2] as usize),
-                            ) {
+                            let (a, b, c) =
+                                (chunk[0] as usize, chunk[1] as usize, chunk[2] as usize);
+                            if let (Some(v0), Some(v1), Some(v2)) =
+                                (transformed(a), transformed(b), transformed(c))
+                            {
+                                let color = triangle_color(a, b, c);
                                 triangles.push(Triangle { v0, v1, v2, color });
                             }
                         }
@@ -264,6 +375,8 @@ pub fn load_glb(bytes: &[u8]) -> Result<Mesh, MeshError> {
                                 transformed(chunk_start + 1),
                                 transformed(chunk_start + 2),
                             ) {
+                                let color =
+                                    triangle_color(chunk_start, chunk_start + 1, chunk_start + 2);
                                 triangles.push(Triangle { v0, v1, v2, color });
                             }
                         }
@@ -273,14 +386,21 @@ pub fn load_glb(bytes: &[u8]) -> Result<Mesh, MeshError> {
         }
 
         for child in node.children() {
-            collect_node(child, &world, blob, triangles, image_averages);
+            collect_node(child, &world, blob, triangles, materials, decoded_images);
         }
     }
 
+    // Resolve material shading up front; decoded textures are cached per
+    // image since materials often share them.
+    let mut decoded_images = std::collections::HashMap::new();
+    let materials: Vec<MaterialShading> = document
+        .materials()
+        .map(|material| material_shading(document, &material, blob, &mut decoded_images))
+        .collect();
+
     let mut triangles = Vec::new();
-    let mut image_averages = std::collections::HashMap::new();
     for node in scene.nodes() {
-        collect_node(node, &IDENTITY, blob, &mut triangles, &mut image_averages);
+        collect_node(node, &IDENTITY, blob, &mut triangles, &materials, &decoded_images);
     }
 
     if triangles.is_empty() {
@@ -438,6 +558,64 @@ mod gltf_tests {
         );
         let mesh = load_glb(&build_glb(&json, &bin)).unwrap();
         assert_eq!(mesh.triangles[0].color, Some(0xFF00C800));
+    }
+
+    #[test]
+    fn load_glb_samples_texture_per_triangle_uv_centroid() {
+        // 2x1 texture: left texel red, right texel blue. Two triangles with
+        // UV centroids in opposite halves must pick up different colors.
+        let mut texture = image::RgbaImage::new(2, 1);
+        texture.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        texture.put_pixel(1, 0, image::Rgba([0, 0, 255, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        texture.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let png = png.into_inner();
+
+        let positions: [f32; 18] = [
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, // triangle A
+            0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, // triangle B
+        ];
+        let uvs: [f32; 12] = [
+            0.0, 0.0, 0.4, 0.0, 0.0, 1.0, // centroid u ≈ 0.13 → left/red
+            0.6, 0.0, 1.0, 0.0, 1.0, 1.0, // centroid u ≈ 0.87 → right/blue
+        ];
+        let mut bin: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let uv_offset = bin.len();
+        bin.extend(uvs.iter().flat_map(|f| f.to_le_bytes()));
+        let png_offset = bin.len();
+        bin.extend_from_slice(&png);
+
+        let json = format!(
+            r#"{{
+            "asset": {{"version": "2.0"}},
+            "scene": 0,
+            "scenes": [{{"nodes": [0]}}],
+            "nodes": [{{"mesh": 0}}],
+            "images": [{{"bufferView": 2, "mimeType": "image/png"}}],
+            "textures": [{{"source": 0}}],
+            "materials": [{{"pbrMetallicRoughness": {{"baseColorTexture": {{"index": 0}}}}}}],
+            "meshes": [{{"primitives": [{{
+                "attributes": {{"POSITION": 0, "TEXCOORD_0": 1}}, "material": 0
+            }}]}}],
+            "accessors": [
+                {{"bufferView": 0, "componentType": 5126, "count": 6, "type": "VEC3",
+                  "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 1.0]}},
+                {{"bufferView": 1, "componentType": 5126, "count": 6, "type": "VEC2"}}
+            ],
+            "bufferViews": [
+                {{"buffer": 0, "byteOffset": 0, "byteLength": 72}},
+                {{"buffer": 0, "byteOffset": {uv_offset}, "byteLength": 48}},
+                {{"buffer": 0, "byteOffset": {png_offset}, "byteLength": {png_len}}}
+            ],
+            "buffers": [{{"byteLength": {total_len}}}]
+        }}"#,
+            png_len = png.len(),
+            total_len = bin.len(),
+        );
+        let mesh = load_glb(&build_glb(&json, &bin)).unwrap();
+        assert_eq!(mesh.triangles.len(), 2);
+        assert_eq!(mesh.triangles[0].color, Some(0xFFFF0000));
+        assert_eq!(mesh.triangles[1].color, Some(0xFF0000FF));
     }
 
     #[test]
